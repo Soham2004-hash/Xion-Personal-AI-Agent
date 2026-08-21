@@ -32,6 +32,10 @@ def initialize_database():
     conn = get_connection()
     cursor = conn.cursor()
 
+    # -------------------------
+    # MEMORIES TABLE
+    # -------------------------
+
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,6 +43,21 @@ def initialize_database():
             memory_value TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        )
+    """)
+
+    # -------------------------
+    # TASKS TABLE
+    # -------------------------
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            priority TEXT NOT NULL DEFAULT 'medium',
+            created_at TEXT NOT NULL,
+            completed_at TEXT
         )
     """)
 

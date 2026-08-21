@@ -1,4 +1,12 @@
 # Decides which tool handles a command
+from tasks.task_manager import (
+    add_task,
+    get_pending_tasks,
+    get_next_task,
+    complete_task,
+    delete_task
+)
+
 from memory.database import (
     save_memory,
     get_memory,
@@ -69,6 +77,118 @@ def process_command(query: str):
             return f"I forgot {key}."
 
         return f"I couldn't find a memory called {key}."
+
+    # =====================================
+    # TASK COMMANDS
+    # =====================================
+
+    elif query.startswith("add a task to "):
+
+        task_name = query.replace(
+            "add a task to ",
+            "",
+            1
+        ).strip()
+
+        task_id = add_task(task_name)
+
+        if task_id:
+            return f"Task added: {task_name}."
+
+        return "I could not add that task."
+
+
+    elif query.startswith("add task "):
+
+        task_name = query.replace(
+            "add task ",
+            "",
+            1
+        ).strip()
+
+        task_id = add_task(task_name)
+
+        if task_id:
+            return f"Task added: {task_name}."
+
+        return "I could not add that task."
+
+
+    elif (
+        "show my tasks" in query
+        or "show tasks" in query
+        or "what are my tasks" in query
+    ):
+
+        tasks = get_pending_tasks()
+
+        if not tasks:
+            return "You have no pending tasks."
+
+        response = f"You have {len(tasks)} pending tasks. "
+
+        for index, task in enumerate(tasks, start=1):
+
+            task_name = task[1]
+            priority = task[3]
+
+            response += (
+                f"Task {index}: "
+                f"{task_name}, "
+                f"priority {priority}. "
+            )
+
+        return response
+
+
+    elif (
+        "what should i work on next" in query
+        or "what should i do next" in query
+        or "next task" in query
+    ):
+
+        task = get_next_task()
+
+        if task:
+            return (
+                f"Your next task is "
+                f"{task[1]}. "
+                f"It has {task[3]} priority."
+            )
+
+        return "You have no pending tasks."
+
+
+    elif query.startswith("complete task "):
+
+        task_name = query.replace(
+            "complete task ",
+            "",
+            1
+        ).strip()
+
+        completed = complete_task(task_name)
+
+        if completed:
+            return f"Task completed: {task_name}."
+
+        return f"I could not find a pending task called {task_name}."
+
+
+    elif query.startswith("delete task "):
+
+        task_name = query.replace(
+            "delete task ",
+            "",
+            1
+        ).strip()
+
+        deleted = delete_task(task_name)
+
+        if deleted:
+            return f"Task deleted: {task_name}."
+
+        return f"I could not find a task called {task_name}."
 
     # =====================================
     # BROWSER COMMANDS

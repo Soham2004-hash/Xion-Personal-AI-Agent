@@ -1,30 +1,29 @@
-                    YOU
-                     │
-                  Voice
-                     │
-              listener.py
-                     │
-             Speech Recognition
-                     │
-                main.py
-                     │
-              agent/router.py
-                     │
-        ┌────────────┼────────────┐
-        ↓            ↓            ↓
-     Memory        Tools       System
-        │            │
-        ↓            ↓
-   SQLite DB      Browser
-        │         Applications
-        ↓
-   data/xion.db
-        │
-        ↓
-     Response
-        │
-        ↓
-  macOS native `say`
-        │
-        ↓
-       YOU
+                     ┌──────────────┐
+                     │     USER     │
+                     └──────┬───────┘
+                            │
+                         Voice
+                            │
+                            ▼
+                   ┌────────────────┐
+                   │ Speech-to-Text │
+                   └────────┬───────┘
+                            │
+                            ▼
+                   ┌────────────────┐
+                   │     ROUTER     │
+                   │ Rule-based AI  │
+                   └─────┬─────┬────┘
+                         │     │
+              ┌──────────┘     └──────────┐
+              ▼                           ▼
+        ┌──────────┐                 ┌──────────┐
+        │  Memory  │                 │  Tasks   │
+        └────┬─────┘                 └────┬─────┘
+             │                            │
+             └──────────┬─────────────────┘
+                        ▼
+                 ┌────────────┐
+                 │ SQLite DB  │
+                 │  xion.db   │
+                 └────────────┘

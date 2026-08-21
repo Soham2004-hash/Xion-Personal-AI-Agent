@@ -4,3 +4,11 @@ Milestone 3 — Dynamic Task Manager          ⏭️ NEXT
 Milestone 4 — LLM Brain                     🔒
 Milestone 5 — Agent Planning                🔒
 Milestone 6 — Deployment                    🔒
+
+
+Milestone 1 — Basic Assistant       ✅
+Milestone 2 — Persistent Memory     ✅
+Milestone 3 — Task Manager          ✅
+                                     │
+                                     ▼
+Milestone 4 — LLM Brain             ⏭️ NEXT
