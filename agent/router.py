@@ -1,242 +1,675 @@
-# Decides which tool handles a command
-from tasks.task_manager import (
-    add_task,
-    get_pending_tasks,
-    get_next_task,
-    complete_task,
-    delete_task
-)
+# ============================================================
+# XION ROUTER
+# ============================================================
+#
+# The Router receives a validated intent from the XION Brain
+# and executes the corresponding Python tool.
+#
+# M4.8:
+# Intelligent task matching
+#
+# Matching order:
+#   1. Exact match
+#   2. Substring match
+#   3. Token overlap
+#   4. Ambiguous -> ask user
+#
+# ============================================================
 
-from memory.database import (
-    save_memory,
-    get_memory,
-    delete_memory
-)
+import re
 
 from tools.browser_tools import (
     open_youtube,
     open_github,
-    open_kaggle
+    open_kaggle,
 )
 
 from tools.system_tools import (
     open_vscode,
     open_spotify,
-    open_brave
+    open_brave,
 )
 
 from tools.time_tools import get_time
 
+from tools.wikipedia_tool import search_wikipedia
 
-def process_command(query: str):
+from memory.database import (
+    save_memory,
+    get_memory,
+)
+
+from tasks.task_manager import (
+    add_task,
+    get_tasks,
+    get_next_task,
+    complete_task,
+    delete_task,
+)
+
+
+# ============================================================
+# TASK MATCHING
+# ============================================================
+
+def _normalize_text(text):
+    """
+    Normalize text for task matching.
+    """
+
+    if not isinstance(text, str):
+        return ""
+
+    text = text.lower().strip()
+
+    # Remove punctuation
+    text = re.sub(r"[^\w\s]", " ", text)
+
+    # Normalize whitespace
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
+
+
+def _tokenize(text):
+    """
+    Convert text into useful word tokens.
+    """
+
+    text = _normalize_text(text)
+
+    if not text:
+        return set()
+
+    stop_words = {
+        "the",
+        "a",
+        "an",
+        "my",
+        "to",
+        "task",
+        "please",
+        "for",
+        "of",
+        "and",
+    }
+
+    tokens = set(text.split())
+
+    return {
+        token
+        for token in tokens
+        if token not in stop_words
+    }
+
+
+def _find_matching_task(task_name, pending_only=False):
+    """
+    Find the safest task match.
+
+    Returns:
+        task tuple
+        None
+        "AMBIGUOUS"
+    """
+
+    if not isinstance(task_name, str):
+        return None
+
+    query = _normalize_text(task_name)
 
     if not query:
-        return "I didn't hear that clearly."
+        return None
 
-    # =====================================
-    # MEMORY COMMANDS
-    # =====================================
+    if pending_only:
+        tasks = get_tasks(status="pending")
+    else:
+        tasks = get_tasks()
 
-    if query.startswith("remember "):
+    if not tasks:
+        return None
 
-        content = query.replace("remember ", "", 1).strip()
+    # --------------------------------------------------------
+    # 1. EXACT MATCH
+    # --------------------------------------------------------
 
-        if " is " in content:
+    exact_matches = []
 
-            key, value = content.split(" is ", 1)
+    for task in tasks:
+        stored_name = _normalize_text(task[1])
 
-            save_memory(key, value)
+        if stored_name == query:
+            exact_matches.append(task)
 
-            return f"I'll remember that {key} is {value}."
+    if len(exact_matches) == 1:
+        return exact_matches[0]
 
-        return (
-            "Please say something like: "
-            "remember my current project is Xion."
+    if len(exact_matches) > 1:
+        return "AMBIGUOUS"
+
+    # --------------------------------------------------------
+    # 2. SUBSTRING MATCH
+    # --------------------------------------------------------
+
+    substring_matches = []
+
+    for task in tasks:
+
+        stored_name = _normalize_text(task[1])
+
+        if query in stored_name or stored_name in query:
+            substring_matches.append(task)
+
+    if len(substring_matches) == 1:
+        return substring_matches[0]
+
+    # If several tasks contain the phrase, do not guess.
+    if len(substring_matches) > 1:
+
+        # Try token matching before declaring ambiguity.
+        query_tokens = _tokenize(query)
+
+        token_candidates = []
+
+        for task in substring_matches:
+
+            task_tokens = _tokenize(task[1])
+
+            if query_tokens and query_tokens.issubset(task_tokens):
+                token_candidates.append(task)
+
+        if len(token_candidates) == 1:
+            return token_candidates[0]
+
+        if len(token_candidates) > 1:
+            return "AMBIGUOUS"
+
+    # --------------------------------------------------------
+    # 3. TOKEN OVERLAP
+    # --------------------------------------------------------
+
+    query_tokens = _tokenize(query)
+
+    if not query_tokens:
+        return None
+
+    scored_tasks = []
+
+    for task in tasks:
+
+        task_tokens = _tokenize(task[1])
+
+        overlap = query_tokens.intersection(task_tokens)
+
+        if not overlap:
+            continue
+
+        # Number of matching meaningful words
+        score = len(overlap)
+
+        # Prefer tasks where most of the query words match
+        coverage = score / len(query_tokens)
+
+        scored_tasks.append(
+            (
+                score,
+                coverage,
+                task
+            )
         )
 
+    if not scored_tasks:
+        return None
 
-    elif query.startswith("what is "):
+    # Sort by:
+    #   1. number of matching words
+    #   2. query coverage
+    scored_tasks.sort(
+        key=lambda item: (
+            item[0],
+            item[1]
+        ),
+        reverse=True
+    )
 
-        key = query.replace("what is ", "", 1).strip()
+    best_score = scored_tasks[0][0]
+    best_coverage = scored_tasks[0][1]
 
-        memory = get_memory(key)
+    best_matches = [
+        item
+        for item in scored_tasks
+        if item[0] == best_score
+        and item[1] == best_coverage
+    ]
 
-        if memory:
-            return f"{key} is {memory}."
+    # Require at least 50% of the query words to match.
+    if best_coverage < 0.5:
+        return None
 
-        return f"I don't have a memory for {key}."
+    if len(best_matches) == 1:
+        return best_matches[0][2]
 
-
-    elif query.startswith("forget "):
-
-        key = query.replace("forget ", "", 1).strip()
-
-        deleted = delete_memory(key)
-
-        if deleted:
-            return f"I forgot {key}."
-
-        return f"I couldn't find a memory called {key}."
-
-    # =====================================
-    # TASK COMMANDS
-    # =====================================
-
-    elif query.startswith("add a task to "):
-
-        task_name = query.replace(
-            "add a task to ",
-            "",
-            1
-        ).strip()
-
-        task_id = add_task(task_name)
-
-        if task_id:
-            return f"Task added: {task_name}."
-
-        return "I could not add that task."
+    return "AMBIGUOUS"
 
 
-    elif query.startswith("add task "):
+# ============================================================
+# PROCESS INTENT
+# ============================================================
 
-        task_name = query.replace(
-            "add task ",
-            "",
-            1
-        ).strip()
+def process_intent(intent_data):
+    """
+    Execute a validated intent produced by the XION Brain.
 
-        task_id = add_task(task_name)
+    Expected input:
 
-        if task_id:
-            return f"Task added: {task_name}."
+    {
+        "intent": "INTENT_NAME",
+        "parameters": {}
+    }
+    """
 
-        return "I could not add that task."
+    if not isinstance(intent_data, dict):
+        return "I couldn't understand that command."
 
+    intent = intent_data.get(
+        "intent",
+        "UNKNOWN"
+    )
 
-    elif (
-        "show my tasks" in query
-        or "show tasks" in query
-        or "what are my tasks" in query
-    ):
+    parameters = intent_data.get(
+        "parameters",
+        {}
+    )
 
-        tasks = get_pending_tasks()
+    if not isinstance(intent, str):
+        return "I couldn't understand that command."
+
+    if not isinstance(parameters, dict):
+        parameters = {}
+
+    intent = intent.upper().strip()
+
+    # ========================================================
+    # GREETING
+    # ========================================================
+
+    if intent == "GREETING":
+        return "Hello. I am Xion. How can I help you?"
+
+    # ========================================================
+    # APPLICATIONS
+    # ========================================================
+
+    if intent == "OPEN_YOUTUBE":
+        return open_youtube()
+
+    if intent == "OPEN_GITHUB":
+        return open_github()
+
+    if intent == "OPEN_KAGGLE":
+        return open_kaggle()
+
+    if intent == "OPEN_VSCODE":
+        return open_vscode()
+
+    if intent == "OPEN_SPOTIFY":
+        return open_spotify()
+
+    if intent == "OPEN_BRAVE":
+        return open_brave()
+
+    # ========================================================
+    # TIME
+    # ========================================================
+
+    if intent == "GET_TIME":
+        return get_time()
+
+    # ========================================================
+    # WIKIPEDIA
+    # ========================================================
+
+    if intent == "SEARCH_WIKIPEDIA":
+
+        query = parameters.get(
+            "query",
+            ""
+        )
+
+        if not isinstance(query, str):
+            return "Please tell me what you want me to search for."
+
+        query = query.strip()
+
+        if not query:
+            return "Please tell me what you want me to search for."
+
+        return search_wikipedia(query)
+
+    # ========================================================
+    # MEMORY - SAVE
+    # ========================================================
+
+    if intent == "REMEMBER":
+
+        key = parameters.get(
+            "key",
+            ""
+        )
+
+        value = parameters.get(
+            "value",
+            ""
+        )
+
+        if not isinstance(key, str):
+            return "I need a valid memory key."
+
+        if not isinstance(value, str):
+            return "I need a valid memory value."
+
+        key = key.strip()
+        value = value.strip()
+
+        if not key or not value:
+            return "I need both the memory key and the value."
+
+        save_memory(
+            key,
+            value
+        )
+
+        return (
+            f"I'll remember that "
+            f"{key} is {value}."
+        )
+
+    # ========================================================
+    # MEMORY - RECALL
+    # ========================================================
+
+    if intent == "RECALL_MEMORY":
+
+        key = parameters.get(
+            "key",
+            ""
+        )
+
+        if not isinstance(key, str):
+            return "Please tell me what you want me to remember."
+
+        key = key.strip()
+
+        if not key:
+            return "Please tell me what you want me to remember."
+
+        value = get_memory(key)
+
+        if value is None:
+            return f"I don't have a memory for {key}."
+
+        return f"{key} is {value}."
+
+    # ========================================================
+    # ADD TASK
+    # ========================================================
+
+    if intent == "ADD_TASK":
+
+        task_name = parameters.get(
+            "task_name",
+            ""
+        )
+
+        priority = parameters.get(
+            "priority",
+            "medium"
+        )
+
+        if not isinstance(task_name, str):
+            return "Please tell me what task you want me to add."
+
+        if not isinstance(priority, str):
+            priority = "medium"
+
+        task_name = task_name.strip()
+        priority = priority.lower().strip()
+
+        if not task_name:
+            return "Please tell me what task you want me to add."
+
+        if priority not in {
+            "high",
+            "medium",
+            "low"
+        }:
+            priority = "medium"
+
+        task_id = add_task(
+            task_name,
+            priority
+        )
+
+        if task_id is None:
+            return "I couldn't add that task."
+
+        return (
+            f"I added the task "
+            f"'{task_name}' "
+            f"with {priority} priority."
+        )
+
+    # ========================================================
+    # SHOW TASKS
+    # ========================================================
+
+    if intent == "SHOW_TASKS":
+
+        tasks = get_tasks()
 
         if not tasks:
-            return "You have no pending tasks."
+            return "You currently have no tasks."
 
-        response = f"You have {len(tasks)} pending tasks. "
+        response = "Here are your tasks:"
 
-        for index, task in enumerate(tasks, start=1):
+        for task in tasks:
 
-            task_name = task[1]
-            priority = task[3]
+            task_id, task_name, status, priority, created_at = task
 
             response += (
-                f"Task {index}: "
-                f"{task_name}, "
-                f"priority {priority}. "
+                f"\n- {task_name} "
+                f"({status}, "
+                f"{priority} priority)"
             )
 
         return response
 
+    # ========================================================
+    # NEXT TASK
+    # ========================================================
 
-    elif (
-        "what should i work on next" in query
-        or "what should i do next" in query
-        or "next task" in query
-    ):
+    if intent == "GET_NEXT_TASK":
 
         task = get_next_task()
 
-        if task:
+        if not task:
+            return "You currently have no pending tasks."
+
+        (
+            task_id,
+            task_name,
+            status,
+            priority,
+            created_at
+        ) = task
+
+        return (
+            f"Your next task is "
+            f"'{task_name}' "
+            f"with {priority} priority."
+        )
+
+    # ========================================================
+    # COMPLETE TASK
+    # ========================================================
+
+    if intent == "COMPLETE_TASK":
+
+        task_name = parameters.get(
+            "task_name",
+            ""
+        )
+
+        if not isinstance(task_name, str):
+            return "Please tell me which task you completed."
+
+        task_name = task_name.strip()
+
+        if not task_name:
+            return "Please tell me which task you completed."
+
+        # Find a pending task intelligently.
+        matched_task = _find_matching_task(
+            task_name,
+            pending_only=True
+        )
+
+        if matched_task is None:
             return (
-                f"Your next task is "
-                f"{task[1]}. "
-                f"It has {task[3]} priority."
+                f"I couldn't find a pending task "
+                f"matching '{task_name}'."
             )
 
-        return "You have no pending tasks."
+        if matched_task == "AMBIGUOUS":
+            return (
+                f"I found multiple pending tasks "
+                f"matching '{task_name}'. "
+                f"Please give me the full task name."
+            )
 
+        actual_task_name = matched_task[1]
 
-    elif query.startswith("complete task "):
+        success = complete_task(
+            actual_task_name
+        )
 
-        task_name = query.replace(
-            "complete task ",
-            "",
-            1
-        ).strip()
+        if success:
+            return (
+                f"I completed the task "
+                f"'{actual_task_name}'."
+            )
 
-        completed = complete_task(task_name)
+        return (
+            f"I couldn't complete the task "
+            f"'{actual_task_name}'."
+        )
 
-        if completed:
-            return f"Task completed: {task_name}."
+    # ========================================================
+    # DELETE TASK
+    # ========================================================
 
-        return f"I could not find a pending task called {task_name}."
+    if intent == "DELETE_TASK":
 
+        task_name = parameters.get(
+            "task_name",
+            ""
+        )
 
-    elif query.startswith("delete task "):
+        if not isinstance(task_name, str):
+            return "Please tell me which task you want to delete."
 
-        task_name = query.replace(
-            "delete task ",
-            "",
-            1
-        ).strip()
+        task_name = task_name.strip()
 
-        deleted = delete_task(task_name)
+        if not task_name:
+            return "Please tell me which task you want to delete."
 
-        if deleted:
-            return f"Task deleted: {task_name}."
+        # Find the task intelligently.
+        matched_task = _find_matching_task(
+            task_name,
+            pending_only=False
+        )
 
-        return f"I could not find a task called {task_name}."
+        if matched_task is None:
+            return (
+                f"I couldn't find a task "
+                f"matching '{task_name}'."
+            )
 
-    # =====================================
-    # BROWSER COMMANDS
-    # =====================================
+        if matched_task == "AMBIGUOUS":
+            return (
+                f"I found multiple tasks "
+                f"matching '{task_name}'. "
+                f"Please give me the full task name."
+            )
 
-    elif "open youtube" in query:
-        return open_youtube()
+        actual_task_name = matched_task[1]
 
-    elif "open github" in query:
-        return open_github()
+        success = delete_task(
+            actual_task_name
+        )
 
-    elif "open kaggle" in query or "open database" in query:
-        return open_kaggle()
+        if success:
+            return (
+                f"I deleted the task "
+                f"'{actual_task_name}'."
+            )
 
-    # =====================================
-    # SYSTEM COMMANDS
-    # =====================================
+        return (
+            f"I couldn't delete the task "
+            f"'{actual_task_name}'."
+        )
 
-    elif "open code" in query or "open vs code" in query:
-        return open_vscode()
-
-    elif "open spotify" in query or "play music" in query:
-        return open_spotify()
-
-    elif "open brave" in query or "open browser" in query:
-        return open_brave()
-    # =====================================
-    # TIME
-    # =====================================
-
-    elif "time" in query:
-        return get_time()
-
-   # =====================================
+    # ========================================================
     # EXIT
-    # =====================================
+    # ========================================================
 
-    elif (
-        "stop" in query
-        or "exit" in query
-        or "goodbye" in query
-    ):
+    if intent == "EXIT":
         return "EXIT"
 
+    return "I don't understand that command yet."
 
-    # =====================================
-    # UNKNOWN COMMAND
-    # =====================================
 
-    else:
-        return "I don't know how to do that yet."
+# ============================================================
+# LEGACY FALLBACK
+# ============================================================
+
+def process_command(query):
+    """
+    Legacy fallback for commands classified as UNKNOWN.
+    """
+
+    if not isinstance(query, str):
+        return "I don't understand that command."
+
+    query = query.lower().strip()
+
+    if query in {
+        "hello",
+        "hi",
+        "hey",
+        "hello xion",
+        "hi xion",
+        "hey xion",
+        "good morning",
+        "good morning xion",
+        "good afternoon",
+        "good afternoon xion",
+        "good evening",
+        "good evening xion",
+    }:
+        return "Hello. I am Xion. How can I help you?"
+
+    if query in {
+        "goodbye",
+        "bye",
+        "exit",
+        "quit",
+        "stop",
+        "goodbye xion",
+        "bye xion",
+        "exit xion",
+        "quit xion",
+    }:
+        return "EXIT"
+
+    return "I don't understand that command yet."
